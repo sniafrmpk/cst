@@ -118,13 +118,13 @@ def delta_analyzer_middle_layers(N, height, middle_thickness):
     # # Create a unique folder for this process
     #folder_name =  folder+f" batch - Height {height}"
     #folder_name = f"Intervals"
-    folder_name = f"Height {height}"
+    folder_name = f"D{D} - Height {height}"
     folder_path = join(parent_path, folder_name)
     os.makedirs(folder_path, exist_ok=True)
     
     # # File name
     
-    file_name = f"spherical_coordinates_N{int(N/1000)}k.csv"
+    file_name = f"spherical_coordinates_D{D}_H{height}_N{int(N/1000)}k.csv"
     file_path = join(folder_path, file_name)
     df = pd.read_csv(file_path, usecols=[1, 2, 3])
     

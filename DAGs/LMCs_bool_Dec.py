@@ -157,8 +157,7 @@ def all_levels_from_G_neg(G_neg, source, target):
     levels = unique_levels(LMCs)
     return levels
 
-
-
+############# Creating R_packed_bool_array using Numba ############
 # --------- layout helpers (strict upper triangle, row-major) ---------
 
 @njit(inline='always')
@@ -265,24 +264,45 @@ def get_row_neighbors(P, N, i):
 # Set number of threads to be used by numba. Might be important for running on cluster
 # set_num_threads(8)
 
-@njit(parallel=True) # For N = 5k time goes down from 5s --> 0.09s
+@njit(parallel=True)  # Works for any spacetime dimension >= 2
 def R_packed(final_coords):
-    N = len(final_coords)
-    
-    # Initialize R
-    R_packed = make_empty_packed_upper(N)  
-    num_edges_E = 0
-    
-    for i in prange(N): 
-        t_i, x_i, y_i, z_i = final_coords[i]
-        
-        for j in range(i + 1, N):
-            t_j, x_j, y_j, z_j = final_coords[j, 0], final_coords[j, 1], final_coords[j, 2], final_coords[j, 3]
+    """
+    Build the packed upper-triangular relations array R for a Minkowski
+    spacetime of arbitrary dimension.
 
-            if (t_j - t_i)**2 > (x_j - x_i)**2 + (y_j - y_i)**2 + (z_j - z_i)**2:
-                set_edge(R_packed, N, i, j)
-                num_edges_E += 1
-    return R_packed, num_edges_E
+    final_coords has shape (N, dim), with:
+        - N = interval_size + 2
+        - time coordinate at index 0
+        - spatial coordinates at indices 1..dim-1
+    """
+    N = final_coords.shape[0]
+    dim = final_coords.shape[1]
+
+    R_array = make_empty_packed_upper(N)
+    num_edges_E = 0
+    counts = np.zeros(N, dtype=np.int32)  # Number of edges from each node
+    for i in prange(N):
+        t_i = final_coords[i, 0]
+        c = 0
+        for j in range(i + 1, N):
+            t_j = final_coords[j, 0]
+            dt = t_j - t_i
+            dt2 = dt * dt
+
+            # Spatial distance squared in (dim-1) spatial dimensions
+            dist2 = 0.0
+            for k in range(1, dim):
+                dx = final_coords[j, k] - final_coords[i, k]
+                dist2 += dx * dx
+                if dist2 > dt2:
+                    break
+
+            if dt2 > dist2:
+                set_edge(R_array, N, i, j)
+                c += 1
+        counts[i] = c
+    num_edges_E = counts.sum()
+    return R_array, num_edges_E
 
 ############ Finding LMCs using edge relaxation (R_packed + Numba) #######
 
@@ -459,39 +479,64 @@ def Visualizing_LMCs_R_packed_interval(interval_size, height, D):
     # ###### Now I want to associate to each element its coordinates using fc
     # all_levels is a list of list. to iterate over it:
     all_points = []
+    dim = fc.shape[1]
     for level, elements in enumerate(all_levels):
-        for element in elements: 
-            t, x, y, z = fc[element]
-            
+        for element in elements:
+            # Time coordinate
+            t = fc[element, 0]
+
+            # Up to three spatial coordinates; fall back to 0 if not present
+            x = fc[element, 1] if dim > 1 else 0.0
+            y = fc[element, 2] if dim > 2 else 0.0
+            z = fc[element, 3] if dim > 3 else 0.0
+
             # find the preds of the element and store in list
             preds = pred[element, 0:pred_count[element]]
 
-            r = np.sqrt(x**2 + y**2 + z**2)
-            if r == 0:
-                theta = 0
-                phi = 0
+            # Dimension-aware radius / angles:
+            # - D = 2 (1+1): r = |x|, no angular information
+            # - D = 3 (2+1): r in the (x,y) plane, theta = polar angle, phi = 0
+            # - D >= 4 (3+1+): usual 3D spherical (x,y,z), ignoring extra spatial dims
+            if D == 2:
+                r = np.abs(x)
+                theta = 0.0
+                phi = 0.0
+            elif D == 3:
+                r = np.sqrt(x**2 + y**2)
+                if r == 0.0:
+                    theta = 0.0
+                    phi = 0.0
+                else:
+                    theta = np.arctan2(y, x)
+                    phi = 0.0
             else:
-                theta = np.arctan2(y ,x)
-                phi = np.arccos(z/r)
-            
-            # all_points.append([element, level, t, r, theta, phi, preds, interval_size, height, D]) 
-            all_points.append([element, level, t, r, theta, phi, preds]) 
+                r = np.sqrt(x**2 + y**2 + z**2)
+                if r == 0.0:
+                    theta = 0.0
+                    phi = 0.0
+                else:
+                    theta = np.arctan2(y, x)
+                    phi = np.arccos(z / r)
+
+            # all_points.append([element, level, t, r, theta, phi, preds, interval_size, height, D])
+            all_points.append([element, level, t, r, theta, phi, preds])
     
     return all_points
 
 def _helper(params):
     N, height, D = params
     return Visualizing_LMCs_R_packed_interval(N, height, D)
-
+#def _init():
+#     set_num_threads(32)
 import csv
 
 if __name__ == "__main__":
     # Settings
-    height = 10
-    D = 4
+    height = 1
+    D = 2
     parent_path = join(expanduser("~"), "Desktop", "GitRepos",
                         "cst_longest_maximal_chains", "DAGs", "LMCs_data", "Intervals")
-    folder_name = f"Height {height}"
+    folder_name = f"D {D} - Height {height}"
     folder_path = join(parent_path, folder_name)
     os.makedirs(folder_path, exist_ok=True)
 
@@ -499,9 +544,9 @@ if __name__ == "__main__":
     # Ns = [592386]
     # Ns = [296193]
     # Ns = [74048, 148096]
-    # Ns = [654,  1309,  2618,  3927,  5236,  6545,  7854,  9163, 10472, 13090, 15708, 18326, 20944, 26180, 39270, 52360, 74048, 104720]
-    Ns = [654]
-    num_trials = 1
+    Ns = [654,  1309,  2618,  3927,  5236,  6545,  7854,  9163, 10472, 13090, 15708, 18326, 20944, 26180, 39270, 52360, 74048, 104720, 148096]
+    # Ns = [654]
+    num_trials = 100
 
     for N in Ns:
         # Determine number of worker processes per N
@@ -516,7 +561,7 @@ if __name__ == "__main__":
         else:
             num_workers = 12
         
-        file_name = f"spherical_coordinates_N{int(N/1000)}k.csv"
+        file_name = f"spherical_coordinates_D{D}_H{height}_N{int(N/1000)}k.csv"
         out_path = join(folder_path, file_name)
 
         # Open output file and write header. "a" ensure appending to file, not overwrite
@@ -530,6 +575,7 @@ if __name__ == "__main__":
  
 
             # Spawn pool of workers
+            #with Pool(processes=num_workers, initializer=_init) as pool:
             with Pool(processes=num_workers) as pool:
                 # args: each worker gets the same N, repeated num_trials times
                 args = [(N, height, D)] * num_trials
@@ -591,8 +637,6 @@ if __name__ == "__main__":
 # current, peak = tracemalloc.get_traced_memory()
 # print(f"Memory allocation peak: {peak/1024**2:.2f} MB")
 # tracemalloc.stop()
-
-
 
 
 
