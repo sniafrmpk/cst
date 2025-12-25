@@ -1,3 +1,104 @@
+from numba import njit
+import numpy as np
+
+@njit
+def start_of_row(u, N):
+    """
+    Number of bits before row u in the packed upper triangle (excluding diagonal).
+    Row u has entries (u, v) for v = u+1..N-1, so length = N-1-u.
+    Sum_{k=0}^{u-1} (N-1-k) = u * (2N - u - 1) / 2.
+    """
+    return u * (2 * N - u - 1) // 2
+
+
+@njit
+def relax_from_row_inline(u, P, N, distance, pred, pred_count, max_pred):
+    INF = np.iinfo(np.int64).max
+
+    # If u is not reachable from s, nothing to do
+    du = distance[u]
+    if du == INF:
+        return
+
+    # Number of entries in row u: (u, v) for v = u+1..N-1
+    L = N - 1 - u
+    if L <= 0:
+        return
+
+    # Bit-index range [r0, rEnd) in the packed array for this row
+    r0   = start_of_row(u, N)
+    rEnd = r0 + L          # exclusive
+
+    # Byte indices covering this row
+    byte_first = r0 // 8
+    byte_last  = (rEnd - 1) // 8   # inclusive
+
+    # Bit positions (0..7, MSB-first) of first and last relevant bits
+    first_bit = r0 & 7
+    last_bit  = (rEnd - 1) & 7
+
+    for b in range(byte_first, byte_last + 1):
+        byte_val = P[b]
+        if byte_val == 0:
+            continue  # no edges in this byte
+
+        # Decide which bit positions in this byte belong to row u
+        if b == byte_first:
+            bit_start = first_bit
+        else:
+            bit_start = 0
+
+        if b == byte_last:
+            bit_stop = last_bit + 1   # exclusive
+        else:
+            bit_stop = 8
+
+        base_bit_index = b << 3      # 8 * b
+
+        # Scan only the relevant bits in this byte
+        for bit in range(bit_start, bit_stop):
+            # MSB-first bit test: position 'bit' in this byte
+            if (byte_val >> (7 - bit)) & 1:
+                g = base_bit_index + bit      # global bit index within packed array
+                offset = g - r0               # 0..L-1 within this row
+                v = u + 1 + offset            # column index (neighbor) in 0..N-1
+
+                # Relax edge (u -> v) with weight -1 (longest-path via min distance)
+                new_dist = du - 1
+                old = distance[v]
+
+                if old == INF or new_dist < old:
+                    distance[v] = new_dist
+                    pred[v, 0] = u
+                    pred_count[v] = 1
+                elif new_dist == old:
+                    c = pred_count[v]
+                    if c < max_pred:
+                        pred[v, c] = u
+                        pred_count[v] = c + 1
+                    else:
+                        # same behaviour as your original code
+                        raise ValueError("max_pred not big enough!")
+
+
+@njit
+def find_longest_paths_numba_R_packed_inline(N, P, s, max_pred=50):
+    """
+    N: number of vertices
+    P: packed-upper-triangular relations as uint8 array
+    s: source index
+    """
+    INF = np.iinfo(np.int64).max
+    distance = np.full(N, INF, dtype=np.int64)
+    distance[s] = 0
+
+    pred = np.full((N, max_pred), -1, dtype=np.int32)
+    pred_count = np.zeros(N, dtype=np.int32)
+
+    for u in range(N):
+        relax_from_row_inline(u, P, N, distance, pred, pred_count, max_pred)
+
+    return distance, pred, pred_count
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -178,7 +279,7 @@ def total_bits_upper(N):
 @njit(inline='always')
 def total_bytes_upper(N):
     tb = total_bits_upper(N)
-    return (tb + 7) // 8
+    return (tb + 7) // 8 # not the byte index, but the total number of bytes needed. Minimum N = 2 gives tb = 1, so 1 byte needed (+7 ensures > 0 bytes < 2 bytes).
 
 # --------- allocate ---------
 
@@ -197,13 +298,13 @@ def set_edge(P, N, i, j):
     
     # 1. Which byte should j go to in row i 
     b   = idx >> 3              # byte index. 
-                                # same as j // 8, i.e., quotient without decimal. 
+                                # same as idx // 8, i.e., quotient without decimal. 
                                 # >> is a bitwise operator that removes bits from the end
                                 # x >> y is equivalent to x / 2**y
     
     # 2. Which bit should it go to
     k   = idx & 7               # bit position 0...7 (LSB-first)
-                                # j & 7 == j mod 8, gives the remainder when dividing by 8. MSB (most significant bit) - first within each byte
+                                # idx & 7 == idx mod 8 = idx % 8, gives the remainder when dividing by 8. MSB (most significant bit) - first within each byte
     
     # 3. Update the byte in the right bit by using bitwise OR
     # We use MSB-first inside each byte:
