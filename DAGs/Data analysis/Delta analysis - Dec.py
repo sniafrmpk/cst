@@ -8,6 +8,7 @@ Created on Thu Dec 12 11:28:11 2024
 import pandas as pd
 import numpy as np
 from matplotlib import pyplot as plt
+import plotly.graph_objects as go
 from collections import defaultdict 
 import os
 from os.path import join, expanduser
@@ -19,13 +20,57 @@ def read_path(D, height):
     folder_name = f"D {D} - Height {height}"
     folder_path = join(parent_path, folder_name)
     os.makedirs(folder_path, exist_ok=True)
-    
     return folder_path
+
 def write_path():
     parent_path = join(expanduser("~"), "Desktop", "GitRepos", "cst_longest_maximal_chains", "DAGs", "Data analysis")
     return parent_path
 
-######### Delta vs. N ######
+######### how many sprinklings ##########
+def all_sprinklings_tuples_for_D_H_N(D, height, N, folder_path):
+        """
+        for now collects level, t and r as tuples for all sprinklings of a given D, H, N in a 
+        list of list called sprinklings
+
+        """
+        file_name = f"spherical_coordinates_D{D}_H{height}_N{int(N/1000)}k.csv"
+        file_path = join(folder_path, file_name)
+
+        # Read only the level, t and r from each row.
+        df = pd.read_csv(file_path, usecols=[1, 2, 3])
+
+        # Step 0: Split the file into sprinklings by finding rows where r is 0
+        sprinklings = []
+        sprinkling = []
+
+        # Iterate over rows. Does not store s and t.
+        for row in df.itertuples(index=False):  # `index=False` avoids including index in tuple
+            level, t, r = row  # Unpack the tuple
+            if level == 0: 
+                sprinkling = []
+                continue
+            if t == height:
+                # Add the current chunk to the list
+                sprinklings.append(sprinkling)
+            else:
+                sprinkling.append((level, t, r))
+        num_of_sprinklings = len(sprinklings)
+        print(f"Number of sprinklings for D={D}, N={N}, height={height}: {num_of_sprinklings}")
+        return sprinklings
+
+def num_of_sprinklings(Ds, heights, Ns, folder_path):
+    """
+        helper function to print (maybe later store,) how many sprinklings for a given data set
+    """
+    for D in Ds:
+        for height in heights:
+            ## This is the loop in which we gather all the results 
+            # sequentially for each N by calling delta_analyzer_all_levels(N)
+            for N in Ns:
+                all_sprinklings_for_D_H_N(D, height, N, folder_path) # returns sprinklings as a list but since its not assigned to any variable, it is cleared, only the print function is used.
+
+
+######### Collecting data ######
 def delta_analyzer_middle_layers(folder_path, D, height, N, middle_thickness):
     """
 
@@ -105,7 +150,7 @@ def delta_analyzer_middle_layers(folder_path, D, height, N, middle_thickness):
     deltas_middle_layers = []
     
     for num_of_levels, chunk_list in sprinkling_groups.items(): # path length, sprinklings with that length
-        chunk_means = []
+        group_means = []
         supremums = [] # contains arrays of the [sup_r, sup_level, num_of_levels] for each sprinkling
 
         # array to store the average r for each level for all sprinklings of the same path length
@@ -157,8 +202,8 @@ def delta_analyzer_middle_layers(folder_path, D, height, N, middle_thickness):
                 mean_r = np.mean(sprinkling_means[mid-middle_thickness : mid+middle_thickness]) # slices the middle three values and finds their mean
     
    ########## Step 3 of determining delta:
-            # Store delta for this sprinkling in the array chunk_means representing the array of means for all the sprinklings with the same longest chain length
-            chunk_means.append(mean_r)
+            # Store delta for this sprinkling in the array group_means representing the array of means for all the sprinklings with the same longest chain length
+            group_means.append(mean_r)
             
             
             # reset all_levels for this sprinkling
@@ -172,8 +217,12 @@ def delta_analyzer_middle_layers(folder_path, D, height, N, middle_thickness):
         # 1B. Calculate the mean of the means for that group of sprinklings
 
 ######### Step 4 of determining delta:
-        mean_of_means = np.mean(chunk_means)
-        std_error = np.std(chunk_means)
+        ##### This are the main quantity I am interested in: delta for each D, H, N.
+        mean_of_means = np.mean(group_means)
+        ##### This definition of standard error just uses the means of the groups sprinklings defined by path length which is not what I am interested in. 
+        # because mean_of_means is treating all path lengths with equal weight the standard deviation should be over all sprinklings. Hence, I should work with the 
+        # function all_deltas below that outputs a python list of numpy arrays, each of which contains deltas for each sprinkling with the same D, H, N.
+        std_error = np.std(group_means)
         
         # 2B. Converts to a 2D array of shape (sprinkling number, level number)
         group_level_means_list = np.array(chunk_levels_means_list)
@@ -205,6 +254,8 @@ def delta_analyzer_middle_layers(folder_path, D, height, N, middle_thickness):
     # rho = N / (height * L**3)
     if D == 4:
         V = np.pi/24*height**4  # True for D = 4
+    if D == 3:
+        V = np.pi/12*height**3  # True for D = 3
     elif D == 2:
         V = 0.5*height**2  # True for D = 2
     rho = N/V
@@ -263,6 +314,27 @@ def all_delta_data(middle_thickness, Ds, heights, N_values):
     #return df_delta_data, df_results
     return df_delta_data
 
+# new function to collect the deltas for all the sprinklings for all Ns. delta defined as the mean of the r-values of all elements in the sprinkling
+def all_deltas(D, H, Ns, def_delta_all_elements, folder_path):
+    """
+    creates a python list of numpy arrays, each of which for one sprinkling ensemble.
+    """
+    # Collect all sprinklings
+    all_deltas_list = []
+    for N in Ns:
+        sprinklings_list = all_sprinklings_tuples_for_D_H_N(D, H, N, folder_path)
+        # for the definition of delta that uses r-values of ALL elements
+        if def_delta_all_elements:
+            # array of deltas for all sprinklings with same D, H, N 
+            # using the all_elements definition of delta which is blind to the path length and
+            # how many paths share an element.
+            sps_mean_rs = [np.mean([r for _,_,r in sprinkling]) for sprinkling in sprinklings_list] 
+            
+            # append that array to a list that contains similar arrays for differing N values.
+            all_deltas_list.append(sps_mean_rs)
+    return all_deltas_list
+
+######### Delta vs. N ######
 def δbyH_vs_N(Ds, df_delta_data_all):
     """
     df_delta_data = pd.DataFrame(all_deltas, columns=[
@@ -361,19 +433,173 @@ def δbyH_vs_N(Ds, df_delta_data_all):
         ax.set_title('δ/H vs. N with labels: (δ/H, H/l₀)', fontsize=20)
         ax.legend(fontsize=12, loc='best')
 
-        plt.tight_layout()
+        fig1.tight_layout()
         parent_path = write_path()
         folder_name = "DeltabyH vs. N"
         folder_path = join(parent_path, folder_name)
         file_name = f"δbyH vs. N - D {D}.png"
-        file_path = join(parent_path, file_name)
-        plt.savefig(file_path)
+        file_path = join(folder_path, file_name)
+        fig1.savefig(file_path)
         plt.show()
     
     return
 
+def deltabyH_vs_N(all_deltas_list, D, H, Ns):
+    """
+    Docstring for deltabyH_vs_N
+    
+    :param all_deltas_list: list of arrays of all deltas for all sprinklings from all_deltas()
+    :param Ns: Same Ns that go into all_deltas()
+
+    :return plot of deltabyH vs. N
+    """
+    # create one delta for each N:
+    deltas_for_each_N = np.asarray([np.mean([delta for delta in all_deltas_N]) for all_deltas_N in all_deltas_list])
+    # create a standard deviation value using deltas for all sprinklings for each N
+    std_for_each_N = np.asarray([np.std([delta for delta in all_deltas_N]) for all_deltas_N in all_deltas_list])
+
+    ### create figure
+    # data to plot
+    N_values = Ns
+    delta_over_H = deltas_for_each_N/H
+
+    # figure
+    fig1, ax = plt.subplots(figsize=(20,10), dpi=400)
+    # scatter for this height group
+    ax.errorbar(
+            N_values, delta_over_H, yerr=std_for_each_N, fmt='o', capsize=5, label=fr'Mean $\delta$ with std. dev. from sprinklings'
+            )
+    
+    # log–log transform, log in python is ln
+    X = np.log(N_values)
+    Y = np.log(delta_over_H)
+
+    # Linear fit: Y = slope*X + intercept, where slope = -beta and intercept = log A
+    slope, intercept = np.polyfit(X, Y, 1)
+
+    beta = -slope             # minus sign because slope is negative
+    A = np.exp(intercept)     # prefactor
+
+    # --- plot the fit curve with A and beta in legend ---
+    N_fit = np.linspace(min(N_values), max(N_values), 200)
+    y_fit = A * N_fit**(-beta)
+    ax.plot(
+        N_fit, y_fit, '--',
+        label=fr'$A\,N^{{-\beta}}$: A={A:.3f}, β={beta:.3f}'
+    )
+            
+    ax.set_xlabel('N', fontsize=20)
+    ax.set_ylabel('δ/H', fontsize=20)
+    ax.set_title(f'δ/H vs. N for D={D}, H={H}', fontsize=20)
+    
+    ax.legend(fontsize=12, loc='best')
+
+    plt.tight_layout()
+    parent_path = write_path()
+    folder_name = "DeltabyH vs. N"
+    folder_path = join(parent_path, folder_name)
+    file_name = f"δbyH vs. N - D{D} - H{H}.png"
+    file_path = join(folder_path, file_name)
+    plt.savefig(file_path)
+
+    return
+######### error in \beta using non-parameterized bootstrap ###########
+def bootstrap_bounds(all_deltas, Ns, B):
+    """
+    Docstring for bootstrap_bounds
+    
+    :param all_deltas: list of arrays containing delta/Hs for sprinklings based on N
+    Ns
+    B ~ 2000 the number of bootstrap samples
+    return: bound_beta, bound_A: tuples of beta_boot_2.5%-97.5% ; similarly for A.
+    """
+    # Idea of bootstrap method:
+    # for a each sprinkling set, all_deltas[k], characterized by N_k (N_0 = 654 e.g.), create new a set of the same size by sampling from all_deltas[k] with replacement.
+    # Thus you will have a new all_deltas_B1. find beta_B1 and A_B1 for it. then create a new all_deltas_B2 from all_deltas like before, and find similarly calculate
+    # beta_B2 and A_B2. Repeat this say 2000 times.
+    # Then you will have two arrays for various values of beta_B and A_B. Find values within them such that only 2.5% of the values lie above and below them, these four values 
+    # go in to bound_beta and bound_A
+    
+    boot_betas = []
+    boot_As = []
+    X = np.log(Ns)
+    rng = np.random.default_rng()
+
+    for b in range(B):
+        # create new all_deltas = all_deltas_b
+        all_deltas_b = []
+        k = 0
+        for N in Ns:
+            # find num_of_sprinklings for that N
+            T_k = len(all_deltas[k])
+            
+            # create a list of random indices uniformly to sample from all_deltas[k] to create all_deltas_b[k]
+            idx = rng.integers(0, T_k, T_k) # upper bound exclusive, like we want since maximum index is T_k-1.
+
+            # sample deltas at these indices from all_deltas[k]
+            arr = np.asarray(all_deltas[k])
+            all_deltas_b.append(arr[idx])
+            k += 1
+            
+        # find beta_b and A_b for all_deltas_b using log-log fit
+        mean_deltas_b_for_all_Ns = [np.mean([delta_b_k_i for delta_b_k_i in deltas_b_k]) for deltas_b_k in all_deltas_b]
+        # log–log transform, log in python is ln
+        Y = np.log(mean_deltas_b_for_all_Ns)
+
+        # Linear fit: Y = slope*X + intercept, where slope = -beta and intercept = log A
+        slope, intercept = np.polyfit(X, Y, 1)
+
+        beta_b = -slope             # minus sign because slope is negative
+        A_b = np.exp(intercept)     # prefactor
+        
+        # append them to boot_betas and boot_As
+        boot_betas.append(beta_b)
+        boot_As.append(A_b)
+    
+    # find lower and upper bounds on beta_b and A_b
+    bound_beta = [np.percentile(boot_betas, 2.5), np.percentile(boot_betas, 97.5)]
+    bound_A = [np.percentile(boot_As, 2.5), np.percentile(boot_As, 97.5)]
+    return bound_beta, bound_A
+
 ######### Shape ########
-def data_rs_ts_all(D, N, height):
+def sprinklings_D_H_N(D, height, N):
+    """
+    Docstring for sprinkling_groups
+    
+    :param N: Description
+    return: sprinkling_groups: dict where key = num_of_levels, value = list of sprinklings with that num_of_levels
+    """
+    parent_path = read_path(D, height)
+    # File name
+    file_name = f"spherical_coordinates_D{D}_H{height}_N{int(N/1000)}k.csv"
+    file_path = join(parent_path, file_name)
+    
+    # Read only the level, t and r from each row.
+    df = pd.read_csv(file_path, usecols=[1, 2, 3, 4, 5]) 
+    
+    # Step 0: Split the file into sprinklings by finding rows where r is 0
+    sprinkling = []
+    num_of_levels = 0
+    # Step 1: Group sprinklings by number of levels
+    sprinkling_groups = defaultdict(list)
+    
+    # Iterate over rows
+    for row in df.itertuples(index=False):  # `index=False` avoids including index in tuple
+        level, t, r, theta, phi = row  # Unpack the tuple
+        if level == 0: 
+            sprinkling = []
+            #sprinkling.append((level, t, r)) # s and t are also added to the levels. s is at level 0 and t is at levels k_max (chain length)
+            continue
+        if t == height:
+            #sprinkling.append((level, t, r))
+            if sprinkling:  # Add the current chunk to the list
+                sprinkling_groups[num_of_levels].append(sprinkling)
+        else:
+            sprinkling.append((level, t, r, theta, phi))
+            num_of_levels = level
+    return sprinkling_groups
+
+def data_rs_ts_all(D, height, N, sprinklings):
     """
     Parameters
     ----------
@@ -391,56 +617,68 @@ def data_rs_ts_all(D, N, height):
         results.append((D, height, N, num_of_levels, rs, ts, len(chunk_list))) #len(chunk_list) is the number of sprinklings with that path length
 
     """
-    parent_path = read_path(D, height)
-    # File name
-    file_name = f"spherical_coordinates_D{D}_H{height}_N{int(N/1000)}k.csv"
-    file_path = join(parent_path, file_name)
-    
-    # Read only the level, t and r from each row.
-    df = pd.read_csv(file_path, usecols=[1, 2, 3]) 
-    
-    # Step 0: Split the file into sprinklings by finding rows where r is 0
-    sprinkling = []
-    num_of_levels = 0
-    # Step 1: Group sprinklings by number of levels
-    sprinkling_groups = defaultdict(list)
-    
-    # Iterate over rows
-    for row in df.itertuples(index=False):  # `index=False` avoids including index in tuple
-        level, t, r = row  # Unpack the tuple
-        if level == 0: 
-            sprinkling = []
-            #sprinkling.append((level, t, r)) # s and t are also added to the levels. s is at level 0 and t is at levels k_max (chain length)
-            continue
-        if t == height:
-            #sprinkling.append((level, t, r))
-            if sprinkling:  # Add the current chunk to the list
-                sprinkling_groups[num_of_levels].append(sprinkling)
-        else:
-            sprinkling.append((level, t, r))
-            num_of_levels = level
-    
     # Step 2: Working with groups of sprinklings with the same path length.
     # A chunk is a sprinkling, so called because it is a 'chunk' of rows in the csv file.
     
     # the final array of results 
     results = []
 
-    for num_of_levels, chunk_list in sprinkling_groups.items(): # path length, sprinklings with that length
-        rs = []
+    for num_of_levels, chunk_list in sprinklings.items(): # path length, sprinklings with that length
         ts = []
+        rs = []
+        thetas = []
+        phis = []
         for chunk in chunk_list:
-            for level, t, r in chunk:
+            for level, t, r, theta, phi in chunk:
                 # r and t are stored for all the sprinklings with the same path length
                 rs.append(r) 
                 ts.append(t)
-        
+                thetas.append(theta)
+                phis.append(phi)
+
         # Store the relevant results for each group of sprinklings as a tuple in results array
-        results.append((D, height, N, num_of_levels, rs, ts, len(chunk_list))) #len(chunk_list) is the number of sprinklings with that path length
+        results.append((D, height, N, num_of_levels, rs, ts, thetas, phis, len(chunk_list))) #len(chunk_list) is the number of sprinklings with that path length
       
     return results
 
-def δ_vs_t(D, N_values, height, min_freq):
+def data_rs_ts_one(D, N, height, sprinklings):
+    """
+    Parameters
+    ----------
+    D : int
+        The dimension of the diamond.
+    N : int
+        Number of points in the sprinkling.
+    height : int
+        The height of the sprinkled region.
+
+    Returns
+    -------
+    results : List
+        Stores the rs and ts for all the points of one sprinkling with the same N, H and k_max = path length 
+        results.append((D, height, N, num_of_levels, rs, ts, len(chunk_list))) #len(chunk_list) is the number of sprinklings with that path length
+
+    """
+    # the final array of results 
+    results = []
+
+    num_of_levels = len(set(level for level, t, r, theta, phi in sprinkling)) #length of the set containing all level values for that sprinkling. Same as max of level
+    ts = []
+    rs = []
+    thetas = []
+    phis = []
+    for level, t, r, theta, phi in sprinkling:
+        # r and t are stored for all the sprinklings with the same path length
+        rs.append(r) 
+        ts.append(t)
+        thetas.append(theta)
+        phis.append(phi)
+
+    # Store the relevant results for each group of sprinklings as a tuple in results array
+    results.append((D, height, N, num_of_levels, rs, ts, thetas, phis, 1)) #len(chunk_list) is the number of sprinklings with that path length
+      
+    return results
+def δ_vs_t(D, N_values, height, min_freq, individual_sprinklings=False):
     """
     Plots r vs. t for all points of all sprinklings with the same path length.
     min_freq = which path lengths to plot based on how many sprinklings produced that path length
@@ -448,15 +686,16 @@ def δ_vs_t(D, N_values, height, min_freq):
 
     """
     all_results = []
-
+    rng = np.random.default_rng()
     ## This is the loop in which we gather all the results 
-    # sequentially for each N by calling delta_analyzer_all_levels(N)
+    # sequentially for each N by calling data_rs_ts_all(D, N, height)
 
     for N in N_values:
         all_results.extend(data_rs_ts_all(D, N, height))
 
     # Convert results to a DataFrame for easy plotting
-    df_results = pd.DataFrame(all_results, columns=["D", "Height", "N", "num_levels", "rs", "ts", "num_sprinklings"])
+    df_results = pd.DataFrame(all_results, columns=["D", "Height", "N", "num_levels", "rs", "ts", "thetas", "phis", "num_sprinklings"])
+    print(df_results)
 
     # plt.figure(figsize=(18, 12), dpi=300)
 
@@ -465,54 +704,102 @@ def δ_vs_t(D, N_values, height, min_freq):
         max_chunks = subset["num_sprinklings"].max()
         
         ## Filter the subset to only include rows where num_sprinklings is the maximum for this N
-        if min_freq == False: 
-            subset_filtered = subset[subset["num_sprinklings"] == max_chunks]
+        if individual_sprinklings:
+            subset_filtered = subset[rng.integers(0, len(subset), 1)]  # select one random sprinkling of varying path length but same N
         else:
-            subset_filtered = subset[subset["num_sprinklings"] >= min_freq]  # Further filter by min_freq
+            if min_freq == False: 
+                subset_filtered = subset[subset["num_sprinklings"] == max_chunks]
+            else:
+                subset_filtered = subset[subset["num_sprinklings"] >= min_freq]  # Further filter by min_freq
 
         # fixed ranges
-        x_min, x_max = 0, height
-        y_min, y_max = 0, 0.50
+        t_min, t_max = 0, height
+        x_min, x_max = -0.50, 0.50
+        y_min, y_max = -0.50, 0.50
         
         for _, row in subset_filtered.iterrows():
             rs = np.array(row["rs"])  # Convert to NumPy array
+            thetas = np.array(row["thetas"])  # Convert to NumPy array
+            phis = np.array(row["phis"])  # Convert to NumPy array
+
+            xs = rs * np.cos(thetas)
+            ys = rs * np.sin(thetas)
             ts = np.array(row["ts"])  # Convert to NumPy array
+
             num_levels = row["num_levels"]
             freq = row["num_sprinklings"]
-            
-            # Create the plot for r vs level with error bars
-            plt.figure(figsize=(20, 10), dpi=600)
-            plt.scatter(ts, rs, s=1, marker=".")
-            
-            # fixed axis + equal scale
-            plt.xlim(x_min, x_max)
-            plt.ylim(y_min, y_max)
-            plt.axis("equal")
-            
-            # gridlines
-            # Set y-ticks at twice the usual density
-            yticks = np.linspace(y_min, y_max, 11)  # 11 ticks → spacing of 0.05 if range=0.5
-            plt.yticks(yticks)
-
-            # Keep x-ticks default
-            plt.grid(True, which="both", linestyle="-", linewidth=0.5, alpha=0.7)
-            
-            plt.xlabel('t')
-            plt.ylabel('radial distance from t-axis')
-            plt.title(f'For N = {N} -- r vs. t for all sprinklings with path length {num_levels+1} with frequency {freq}')
             
             # Create a unique folder for this process
             parent_path = write_path()
             folder = "rs vs t"
             subfolder = f"D {D} - Height {height}"
             folder_path = join(parent_path, folder, subfolder)
-            file_name = f"D{D}_N{N}_H{height}_levels{num_levels}_freq{freq}.png"
+            file_name = f"D{D}_N{N}_H{height}_levels{num_levels}_freq{freq}"
             file_path = join(folder_path, file_name)
             os.makedirs(folder_path, exist_ok=True)
-            plt.savefig(file_path)
+
+            if D == 2:
+                # Create the plot for r vs t, with t on the y-axis
+                plt.figure(figsize=(20, 20), dpi=600)
+                plt.scatter(xs, ts, s=1, marker=".")
+                
+                # fixed axis + equal scale
+                plt.ylim(t_min, t_max)
+                plt.xlim(x_min, x_max)
+                plt.axis("equal")
+                
+                # gridlines
+                # Keep x-ticks default
+                plt.grid(True, which="both", linestyle="-", linewidth=0.5, alpha=0.7)
+
+                # Set y-ticks at twice the usual density
+                yticks = np.linspace(t_min, t_max, 11)  # 11 ticks → spacing of 0.05 if range=0.5
+                plt.yticks(yticks)
+
+                plt.xlabel('x coordinate of the elements')
+                plt.ylabel('t')
+                plt.title(f'For N = {N}, D = {D}, H = {height} -- x vs. t for all sprinklings with path length {num_levels+1} with frequency {freq}')
+                plt.savefig(f'{file_path}.png')
+                plt.close()
             
-            plt.close()
+            if D == 3: 
+                fig = go.Figure(
+                    data=go.Scatter3d(x=xs, y=ys, z=ts, mode='markers', marker=dict(size=2))
+                )
+                fig.update_layout(
+                    scene=dict(
+                        xaxis_title='x coordinate of the elements',
+                        yaxis_title='y coordinate of the elements',
+                        zaxis_title='t',
+                        xaxis=dict(range=[x_min, x_max]),
+                        yaxis=dict(range=[y_min, y_max]),
+                        zaxis=dict(range=[t_min, t_max]),
+                        aspectratio=dict(x=1, y=1, z=1)
+                    ),
+                    title=f'For N = {N}, D = {D}, H = {height} -- x,y vs. t for all sprinklings with path length {num_levels+1} with frequency {freq}'
+                )
+
+                fig.write_html(f'{file_path}.html', auto_open=False)
+
+            if D == 4:
+                raise NotImplementedError("3D plot for D=4 is not implemented.")    
+            
+            
     return
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ######### Before understanding how height affects delta ########
 def delta_vs_N(height=1, most_frequent_sprinkling=True, min_freq=4):
@@ -1046,25 +1333,43 @@ def δ_vs_density(df_delta_data):
 
 if __name__ == "__main__":
     
-    Ds = [2]
+    Ds = [3]
+   
     # for Height 1 only
-    Ns = [654,  1309,  2618,  3927,  5236,  6545,  7854,  9163, 10472, 13090, 15708, 18326, 20944, 26180, 39270, 52360, 74048, 104720, 148096, 209440, 296193, 418880, 592368]
+    Ns = [654]
+    # Ns = [654,  1309,  2618,  3927,  5236,  6545,  7854,  9163, 10472, 13090, 15708, 18326, 20944, 26180, 39270, 52360, 74048, 104720, 148096, 209440, 296193, 418880, 592368, 1184736]
     # Ns = [1675470]
+    heights = [1]
+
 
     # For Height 1 and 10
-    #Ns = [  654,  1309,  2618,  3927,  5236,  6545,  7854,  9163, 10472, 13090, 15708, 18326, 20944]
+    # Ns = [  654,  1309,  2618,  3927,  5236,  6545,  7854,  9163, 10472, 13090, 15708, 18326, 20944]
     
-    mid_thickness = False
-    heights = [1]
-    min_freq = False
+    #### Delta vs N plot ####
+    # folder_path = read_path(Ds[0], heights[0])
+    # all_deltas_list = all_deltas(Ds[0], heights[0], Ns, True, folder_path)
+
+    #deltabyH_vs_N(all_deltas_list, Ds[0], heights[0], Ns)
+
+    #### bounds on beta and A ####
+    # num_of_sprinklings(Ds, heights, Ns, folder_path)
+    # all_deltas_D2_H1 = all_deltas(Ds[0], heights[0], Ns, True, folder_path)
+    # bound_beta, bound_A = bootstrap_bounds(all_deltas_D2_H1, Ns, 2000)
+    # print(f"bound_beta = {bound_beta}")
+    # print(f"bound_A = {bound_A}")
 
     # df_delta_data = all_delta_data(mid_layers)
     
-    δ_vs_t(Ds[0], Ns, heights[0], min_freq)
+    #### Delta vs t plot ####
+    min_freq = False
+    individual_sprinklings = True
+    δ_vs_t(Ds[0], Ns, heights[0], min_freq, individual_sprinklings)
     
     # Read the files and create data frame
-    #df_delta_data_all = all_delta_data(mid_thickness, Ds, heights, Ns)
-    #δbyH_vs_N(Ds, df_delta_data_all)
+    # mid_thickness = False
+    
+    # df_delta_data_all = all_delta_data(mid_thickness, Ds, heights, Ns)
+    # δbyH_vs_N(Ds, df_delta_data_all)
     
     
     
