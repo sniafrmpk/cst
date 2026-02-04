@@ -35,7 +35,7 @@ def Minkowski_interval(interval_size=10000, height=1, dimension=4):
     coord = np.zeros((1,dimension))
     while success < N - 1:
         coord[0,0] = height * random.random()
-        coord[0,1:] =  height * np.random.rand(1,dimension-1) - 0.5 * height
+        coord[0,1:] =  height * np.rand(1,dimension-1) - 0.5 * height
         if coord[0,0] < 0.5 * height:
             width = coord[0,0]
         else:
@@ -106,16 +106,16 @@ def Minkowski_cube(rho = 10000, height = 1, D = 4, l=0):
     return final_coords
 
 ######################## DiGraph with negative weights for reference ###################
-def iter_weighted_edges_from_neighbors(Rp, N, weight=-1):
-    for u in range(N):
-        nbrs = get_row_neighbors(Rp, N, u)
+def iter_weighted_edges_from_neighbors(Rp, N_total, weight=-1):
+    for u in range(N_total):
+        nbrs = get_row_neighbors(Rp, N_total, u)
         for v in nbrs:
             yield (u, v, weight)
 
-def graph_from_neighbors_weighted(Rp, N, weight=-1):
+def graph_from_neighbors_weighted(Rp, N_total, weight=-1):
     t0 = time.time()
     G = nx.DiGraph()
-    G.add_weighted_edges_from(iter_weighted_edges_from_neighbors(Rp, N, weight))
+    G.add_weighted_edges_from(iter_weighted_edges_from_neighbors(Rp, N_total, weight))
     print(f"Created weighted DiGraph with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges "
           f"in {time.time() - t0:.2f}s")
     return G
@@ -184,12 +184,11 @@ def total_bytes_upper(N):
 # --------- allocate ---------
 
 @njit
-def make_empty_packed_upper(N):
+def make_empty_packed_upper(N_total):
     """Allocate 1D packed upper-triangle bit array (uint8)."""
-    return np.zeros(total_bytes_upper(N), dtype=np.uint8)
+    return np.zeros(total_bytes_upper(N_total), dtype=np.uint8)
 
-# --------- set / clear / get single (i,j) with i<j ---------
-
+# --------- set / clear / get single (i,j) with i<j ---------*
 @njit
 def set_edge(P, N, i, j):
     if not (0 <= i < j < N):
@@ -234,13 +233,13 @@ def get_edge(P, N, i, j):
 # --------- read a whole row i (neighbors j>i) ---------
 
 @njit
-def get_row_neighbors(P, N, i):
-    L = N - 1 - i
+def get_row_neighbors(P, N_total, i):
+    L = N_total - 1 - i
     out = List.empty_list(types.int64)
     if L <= 0:
         return out
 
-    r0   = start_of_row(i, N)
+    r0   = start_of_row(i, N_total)
     rEnd = r0 + L
     b0   = r0 >> 3
     bEnd = (rEnd + 7) >> 3
@@ -258,7 +257,7 @@ def get_row_neighbors(P, N, i):
             # MSB-first test
             if (byte >> (7 - bit)) & 1:
                 j = i + 1 + (g - r0)
-                if j < N:      # redundant but harmless safety
+                if j < N_total:      # redundant but harmless safety
                     out.append(j)
     return out
 
@@ -276,16 +275,16 @@ def R_packed(final_coords):
         - time coordinate at index 0
         - spatial coordinates at indices 1..dim-1
     """
-    N = final_coords.shape[0]
+    N_total = final_coords.shape[0]
     dim = final_coords.shape[1]
 
-    R_array = make_empty_packed_upper(N)
+    R_array = make_empty_packed_upper(N_total)
     num_edges_E = 0
-    counts = np.zeros(N, dtype=np.int32)  # Number of edges from each node
-    for i in prange(N):
+    counts = np.zeros(N_total, dtype=np.int32)  # Number of edges from each node
+    for i in prange(N_total):
         t_i = final_coords[i, 0]
         c = 0
-        for j in range(i + 1, N):
+        for j in range(i + 1, N_total):
             t_j = final_coords[j, 0]
             dt = t_j - t_i
             dt2 = dt * dt
@@ -299,7 +298,7 @@ def R_packed(final_coords):
                     break
 
             if dt2 > dist2:
-                set_edge(R_array, N, i, j)
+                set_edge(R_array, N_total, i, j)
                 c += 1
         counts[i] = c
     num_edges_E = counts.sum()
@@ -311,19 +310,19 @@ def R_packed(final_coords):
 INF_I32 = np.int32(2**31 - 1)
 
 @njit
-def relax_from_row_inline(u, P, N, distance, pred, pred_count, max_pred):
+def relax_from_row_inline(u, P, N_total, distance, pred, pred_count, max_pred):
     # If u is not reachable from s, nothing to do
     du = distance[u]
     if du == INF_I32:
         return
 
     # Number of entries in row u: (u, v) for v = u+1..N-1
-    L = N - 1 - u
+    L = N_total - 1 - u
     if L <= 0:
         return
 
     # Bit-index range [r0, rEnd) in the packed array for this row
-    r0   = start_of_row(u, N)
+    r0   = start_of_row(u, N_total)
     rEnd = r0 + L          # exclusive
 
     # Byte indices covering this row
@@ -383,21 +382,21 @@ def relax_from_row_inline(u, P, N, distance, pred, pred_count, max_pred):
                     # keep the safety check
                     raise ValueError("max_pred not big enough!")
 @njit
-def find_longest_paths_numba_R_packed_inline(N, P, s, max_pred=50): # Checked with digraph code and it produces the same levels
-    distance = np.full(N, INF_I32, dtype=np.int32)
+def find_longest_paths_numba_R_packed_inline(N_total, P, s, max_pred=50): # Checked with digraph code and it produces the same levels
+    distance = np.full(N_total, INF_I32, dtype=np.int32)
     distance[s] = 0
 
-    pred = np.full((N, max_pred), -1, dtype=np.int32)
-    pred_count = np.zeros(N, dtype=np.int32)
+    pred = np.full((N_total, max_pred), -1, dtype=np.int32)
+    pred_count = np.zeros(N_total, dtype=np.int32)
 
-    for u in range(N):
-        relax_from_row_inline(u, P, N, distance, pred, pred_count, max_pred)
+    for u in range(N_total):
+        relax_from_row_inline(u, P, N_total, distance, pred, pred_count, max_pred)
 
     return distance, pred, pred_count
 
 #### adj[u] as list #####
 @njit # Poduces: pred(~n x max_pred), pred_count and distance arrays
-def find_longest_paths_numba_R_packed(n, R_packed, s, max_pred=50):
+def find_longest_paths_numba_R_packed(n_total, R_packed, s, max_pred=50):
     """
     Find all longest paths from source (s) to target (t) in a DAG using
     Bellman-Ford with negative weights
@@ -413,19 +412,19 @@ def find_longest_paths_numba_R_packed(n, R_packed, s, max_pred=50):
     - distance, pred, pred_count
     """
     # Initialize distance array with a large integer value (infinity)
-    distance = np.full(n, np.iinfo(np.int64).max, dtype=np.int64)
+    distance = np.full(n_total, np.iinfo(np.int64).max, dtype=np.int64)
     distance[s] = 0  # Set source distance to 0
     
-    # Initialize predecessors: 2D array (n, max_pred) and count array
-    pred = np.full((n, max_pred), -1, dtype=np.int32)  # -1 means no predecessor
-    pred_count = np.zeros(n, dtype=np.int32)  # Number of predecessors per node
+    # Initialize predecessors: 2D array (n_total, max_pred) and count array
+    pred = np.full((n_total, max_pred), -1, dtype=np.int32)  # -1 means no predecessor
+    pred_count = np.zeros(n_total, dtype=np.int32)  # Number of predecessors per node
     
     # Relaxation step: Iterate over all nodes
-    for u in range(n):
+    for u in range(n_total):
         if distance[u] != np.iinfo(np.int64).max:  # If node u is reachable, i.e. is in the future of s
-            
-            #row_u = np.unpackbits(R_packed[u], bitorder='big')[:n]
-            adj_u = get_row_neighbors(R_packed, n, u) # creates an int32 array containing indices of non_zero entries in row[u] of R_bool 
+
+            #row_u = np.unpackbits(R_packed[u], bitorder='big')[:n_total]
+            adj_u = get_row_neighbors(R_packed, n_total, u) # creates an int32 array containing indices of non_zero entries in row[u] of R_bool 
             for v in adj_u: # v is a neighbor node of u
                 new_dist = distance[u] - 1  # Assume edge weight is -1 for longest path
                 if distance[v] == np.iinfo(np.int64).max or new_dist < distance[v]:
@@ -552,8 +551,8 @@ def Visualizing_LMCs_R_packed_interval(interval_size, height, D, inline):
         ########## Generating the fc and all_levels ###########
     
     #initialize other variables
-    N = interval_size + 2
-    i, j = 0, N - 1
+    N_total = interval_size + 2
+    i, j = 0, N_total - 1
     max_pred = 250
     t00 = time.time()
     
@@ -569,11 +568,11 @@ def Visualizing_LMCs_R_packed_interval(interval_size, height, D, inline):
     #print(f"The number of relations, E, for N = {N/1000:.0f}k is: E = {num_edges_E:.2e}")
     
     # Find all_levels
-    all_levels, pred, pred_count = numpy_R_packed_LMCs(N, R, i, j, max_pred, inline)
+    all_levels, pred, pred_count = numpy_R_packed_LMCs(N_total, R, i, j, max_pred, inline)
     tf = time.time()
-    #print(f"---Total time to find LMCs for N = {N}, D = {D}, l = {l}, i = {i} and j = {j}: {tf - t00: .2f} s---")
-    
-    
+    #print(f"---Total time to find LMCs for N = {N_total}, D = {D}, l = {l}, i = {i} and j = {j}: {tf - t00: .2f} s---")
+
+
     # ###### Now I want to associate to each element its coordinates using fc
     # all_levels is a list of list. to iterate over it:
     all_points = []
@@ -622,8 +621,8 @@ def Visualizing_LMCs_R_packed_interval(interval_size, height, D, inline):
     return all_points
 
 def _helper(params):
-    N, height, D, inline = params
-    return Visualizing_LMCs_R_packed_interval(N, height, D, inline)
+    N_inside, height, D, inline = params
+    return Visualizing_LMCs_R_packed_interval(N_inside, height, D, inline)
 #def _init():
 #     set_num_threads(32)
 import csv
@@ -631,7 +630,7 @@ import csv
 if __name__ == "__main__":
     # Settings
     height = 1
-    D = 4
+    D = 5
     inline = True
 
     parent_path = join(expanduser("~"), "Desktop", "GitRepos",
@@ -640,33 +639,33 @@ if __name__ == "__main__":
     folder_path = join(parent_path, folder_name)
     os.makedirs(folder_path, exist_ok=True)
     
-    # Ns = [654]
-    # Ns = [654,  1309,  2618,  3927,  5236,  6545,  7854,  9163, 10472, 13090, 15708, 18326, 20944, 26180, 39270]
-    Ns = [52360, 74048, 104720, 148096, 209440, 296193, 418880, 592368]
-    # Ns = [296193, 418880, 592368]
-    # Ns = [1184736, 1675470]
-    num_trials = 216
+    inside_Ns = [100]
+    # inside_Ns = [654,  1309,  2618,  3927,  5236,  6545,  7854,  9163, 10472, 13090, 15708, 18326, 20944, 26180, 39270]
+    # inside_Ns = [52360, 74048, 104720, 148096, 209440, 296193, 418880, 592368]
+    # inside_Ns = [296193, 418880, 592368]
+    # inside_Ns = [1184736, 1675470]
+    num_trials = 1
     mem_limit_gb = 22  # memory limit in GB
     num_cores = os.cpu_count()
 
     program_start_time = time.perf_counter()
-    for N in Ns:
+    for N_inside in inside_Ns:
         # Determine number of worker processes per N
         # for mac with memory limit of 22GB
-        def mem(N):
-            return 256/3/(1184736**2)*N**2
-        def num_workers(N, mem_limit_gb):
-            return mem_limit_gb / mem(N)
-        if num_workers(N, mem_limit_gb) > num_cores:
+        def mem(N_inside):
+            return 256/3/(1184736**2)*N_inside**2
+        def num_workers(N_inside, mem_limit_gb):
+            return mem_limit_gb / mem(N_inside)
+        if num_workers(N_inside, mem_limit_gb) > num_cores:
             num_workers = num_cores
         else:
-            num_workers = int(num_workers(N, mem_limit_gb))
-        if N >= 420000:
+            num_workers = int(num_workers(N_inside, mem_limit_gb))
+        if N_inside >= 420000:
             num_trials = 90
-        elif N >= 290000:
+        elif N_inside >= 290000:
             num_trials = 90
-        
-        file_name = f"spherical_coordinates_D{D}_H{height}_N{int(N/1000)}k.csv"
+
+        file_name = f"spherical_coordinates_D{D}_H{height}_N{int(N_inside/1000)}k.csv"
         out_path = join(folder_path, file_name)
 
         # Open output file and write header. "a" ensure appending to file, not overwrite
@@ -683,15 +682,15 @@ if __name__ == "__main__":
             #with Pool(processes=num_workers, initializer=_init) as pool:
             with Pool(processes=num_workers) as pool:
                 # args: each worker gets the same N, repeated num_trials times
-                args = [(N, height, D, inline)] * num_trials
+                args = [(N_inside, height, D, inline)] * num_trials
                 start_time = time.perf_counter()
                 counter = 0
                 for rows in pool.imap_unordered(_helper, args):
                     writer.writerows(rows)
                     counter += 1
                     if counter % num_workers == 0: 
-                        print(f"Finished {counter} sprinklings for N={int(N/1000)}k in {time.perf_counter() - start_time:.2f}s")
-        print(f"Finished writing CSV (using inline={inline} with further tweaks) for N={N} with {num_workers} workers.")
+                        print(f"Finished {counter} sprinklings for N={int(N_inside/1000)}k in {time.perf_counter() - start_time:.2f}s")
+        print(f"Finished writing CSV (using inline={inline} with further tweaks) for N={N_inside} with {num_workers} workers.")
     print(f"--- Total program time: {time.perf_counter() - program_start_time:.2f} s ---")
 # Unix command to run on biggee so that I can log out:
     # nohup python3 LMCs_bool_Dec_v3.py > output.txt 2>&1 &
