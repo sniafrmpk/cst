@@ -35,7 +35,7 @@ def Minkowski_interval(interval_size=10000, height=1, dimension=4):
     coord = np.zeros((1,dimension))
     while success < N - 1:
         coord[0,0] = height * random.random()
-        coord[0,1:] =  height * np.rand(1,dimension-1) - 0.5 * height
+        coord[0,1:] =  height * np.random.rand(1,dimension-1) - 0.5 * height
         if coord[0,0] < 0.5 * height:
             width = coord[0,0]
         else:
@@ -627,10 +627,16 @@ def _helper(params):
 #     set_num_threads(32)
 import csv
 
+def mem(N_inside):
+    return 256/3/(1184736**2)*N_inside**2
+def recommended_workers(N_inside, mem_limit_gb):
+    return mem_limit_gb / mem(N_inside)
+
 if __name__ == "__main__":
     # Settings
-    height = 1
-    D = 5
+    height = 10
+    D = 4
+    # inline is the modification to the code that does not generate adj[u] when running the graph algorithm
     inline = True
 
     parent_path = join(expanduser("~"), "Desktop", "GitRepos",
@@ -639,12 +645,12 @@ if __name__ == "__main__":
     folder_path = join(parent_path, folder_name)
     os.makedirs(folder_path, exist_ok=True)
     
-    inside_Ns = [100]
+    # inside_Ns = [100]
     # inside_Ns = [654,  1309,  2618,  3927,  5236,  6545,  7854,  9163, 10472, 13090, 15708, 18326, 20944, 26180, 39270]
-    # inside_Ns = [52360, 74048, 104720, 148096, 209440, 296193, 418880, 592368]
+    inside_Ns = [52360, 74048, 104720, 148096, 209440]
     # inside_Ns = [296193, 418880, 592368]
     # inside_Ns = [1184736, 1675470]
-    num_trials = 1
+    num_trials = 120
     mem_limit_gb = 22  # memory limit in GB
     num_cores = os.cpu_count()
 
@@ -652,14 +658,8 @@ if __name__ == "__main__":
     for N_inside in inside_Ns:
         # Determine number of worker processes per N
         # for mac with memory limit of 22GB
-        def mem(N_inside):
-            return 256/3/(1184736**2)*N_inside**2
-        def num_workers(N_inside, mem_limit_gb):
-            return mem_limit_gb / mem(N_inside)
-        if num_workers(N_inside, mem_limit_gb) > num_cores:
-            num_workers = num_cores
-        else:
-            num_workers = int(num_workers(N_inside, mem_limit_gb))
+        
+        worker_count = max(1, min(num_cores, int(recommended_workers(N_inside, mem_limit_gb))))
         if N_inside >= 420000:
             num_trials = 90
         elif N_inside >= 290000:
@@ -679,8 +679,8 @@ if __name__ == "__main__":
  
 
             # Spawn pool of workers
-            #with Pool(processes=num_workers, initializer=_init) as pool:
-            with Pool(processes=num_workers) as pool:
+            #with Pool(processes=worker_count, initializer=_init) as pool:
+            with Pool(processes=worker_count) as pool:
                 # args: each worker gets the same N, repeated num_trials times
                 args = [(N_inside, height, D, inline)] * num_trials
                 start_time = time.perf_counter()
@@ -688,10 +688,28 @@ if __name__ == "__main__":
                 for rows in pool.imap_unordered(_helper, args):
                     writer.writerows(rows)
                     counter += 1
-                    if counter % num_workers == 0: 
+                    if counter % worker_count == 0: 
                         print(f"Finished {counter} sprinklings for N={int(N_inside/1000)}k in {time.perf_counter() - start_time:.2f}s")
-        print(f"Finished writing CSV (using inline={inline} with further tweaks) for N={N_inside} with {num_workers} workers.")
+        print(f"Finished writing CSV (using inline={inline} with further tweaks) for N={N_inside} with {worker_count} workers.")
     print(f"--- Total program time: {time.perf_counter() - program_start_time:.2f} s ---")
+    # #   # testing numba vs regular python for making R
+    # N = 25000
+    # fc = Minkowski_interval(N, 1, 4) # produces fc with interval_size+2 coordinates
+    
+    # # Create rows and columns for the edges
+    # t0 = time.perf_counter()
+    
+    # R, num_edges_E = R_packed(fc)
+    # print(f'Time to make R for N = {N} without njit and prange: {time.perf_counter() - t0:.2f}s')
+
+
+
+
+
+
+
+
+
 # Unix command to run on biggee so that I can log out:
     # nohup python3 LMCs_bool_Dec_v3.py > output.txt 2>&1 &
 
@@ -747,9 +765,6 @@ if __name__ == "__main__":
 # current, peak = tracemalloc.get_traced_memory()
 # print(f"Memory allocation peak: {peak/1024**2:.2f} MB")
 # tracemalloc.stop()
-
-
-
 
 
 

@@ -26,6 +26,35 @@ def write_path():
     parent_path = join(expanduser("~"), "Desktop", "GitRepos", "cst_longest_maximal_chains", "DAGs", "Data analysis")
     return parent_path
 
+# ---------------------------------------------------------------------
+# Data collection pipelines (quick reference)
+#
+# Pipeline 1 (summary delta table for delta/H vs N):
+#   delta_analyzer_middle_layers -> all_delta_data -> df_delta_data_all
+#   Uses (level, t, r), groups by k_max, computes per-group mean_of_means,
+#   then delta = mean over groups.
+#
+# Pipeline 2 (bootstrap/error-bar input):
+#   all_sprinklings_tuples_for_D_H_N -> all_deltas -> bootstrap_bounds / deltabyH_vs_N
+#   Uses (level, t, r), computes one delta per sprinkling (mean r), returns
+#   list-of-arrays indexed by N.
+#
+# Pipeline 3 (shape/time visualization):
+#   sprinklings_D_H_N -> data_rs_ts_all -> δ_vs_t / num_paths tooling
+#   Uses full row (element, level, t, r, theta, phi, preds), then flattens to
+#   rs/ts/thetas/phis per k_max group for plotting.
+#
+# Why 1 and 3 are not identical outputs:
+#   Pipeline 3 flattens point clouds for visualization and path-shape analysis.
+#   It does not preserve the per-sprinkling/per-level structure used by
+#   Pipeline 1's mean_of_means -> delta aggregation.
+#
+# Unification direction (if you refactor later):
+#   Build one canonical loader that returns sprinklings with optional fields
+#   (minimal: level,t,r; full: +element,theta,phi,preds). Then keep separate
+#   "reducers" for summary-delta, bootstrap arrays, and shape plots.
+# ---------------------------------------------------------------------
+
 ######### how many sprinklings ##########
 # how is it different to sprinklings_D_H_N() defined below?
 def all_sprinklings_tuples_for_D_H_N(D, height, N, folder_path):
@@ -71,6 +100,7 @@ def num_of_sprinklings(Ds, heights, Ns, folder_path):
                 all_sprinklings_for_D_H_N(D, height, N, folder_path) # returns sprinklings as a list but since its not assigned to any variable, it is cleared, only the print function is used.
 
 ######### Collecting data ######
+# Pipeline 1: produces summary statistics used in df_delta_data_all.
 def delta_analyzer_middle_layers(folder_path, D, height, N, use_middle_third, file_path_override=None):
     """
 
@@ -87,14 +117,18 @@ def delta_analyzer_middle_layers(folder_path, D, height, N, use_middle_third, fi
     Returns
     -------
     results : List
-            Stores the following for each group of sprinklings with the same N, H and k_max = path length    
+            Stores the following for each group of sprinklings with the same N, H and k_max = path length
         (height, N, path_length, round(mean_of_sups, 4), round(std_sups, 4), round(mean_of_means, 4), round(std_error,4), group_level_means, group_level_se, group_level_means_t, group_level_se_t, len(chunk_list))) #len(chunk_list) is the number of sprinklings with that path length
+        Here, mean_of_means is a per-group quantity: it averages sprinkling-level deltas
+        only within one path-length group (fixed k_max).
 
     delta_data : Array with one row
     Stores the following for all the sprinklings with the same H and N.    
     [height, N, int(rho), round(l_0, 3), round(delta, 3), round(delta / l_0, 3), round(L/l_0, 3), round(height / l_0, 3)]
-    Where the delta is the average of the deltas of varrying path sizes produced in sprinklings with the same
-    N and H. 
+    Where delta is an across-group quantity: after computing mean_of_means for each
+    path-length group, delta is the mean of those group means for the same N and H.
+    Therefore, each path-length group has equal weight in delta, regardless of how
+    many sprinklings are in that group.
     
     """
     # File name (can be overridden for non-standard filenames)
@@ -238,6 +272,7 @@ def delta_analyzer_middle_layers(folder_path, D, height, N, use_middle_third, fi
 
 ######### Step 4 of determining delta:
         ##### This are the main quantity I am interested in: delta for each D, H, N.
+        # mean_of_means is per k_max group (one path-length group only).
         mean_of_means = np.nanmean(group_means)
         ##### This definition of standard error just uses the means of the groups sprinklings defined by path length which is not what I am interested in. 
         # because mean_of_means is treating all path lengths with equal weight the standard deviation should be over all sprinklings. Hence, I should work with the 
@@ -265,6 +300,7 @@ def delta_analyzer_middle_layers(folder_path, D, height, N, use_middle_third, fi
    
 ######### Step 6 of determining delta:
     ## 3. average delta for all the sprinklings
+    # delta is across k_max groups: equal weight per path-length group.
     delta = np.mean(deltas_middle_layers)  
     
     # The array / list I want to be returned
@@ -285,12 +321,56 @@ def delta_analyzer_middle_layers(folder_path, D, height, N, use_middle_third, fi
     delta_data = [D, height, N, int(rho), round(l_0, 3), round(delta, 3), round(delta / height, 3), round(delta / l_0, 3), round(height / l_0, 3)]
     return results, delta_data
 
+# Pipeline 2: one delta value per sprinkling, grouped by N (for bootstrap/error bars).
+# delta is defined here as the mean r over all inside points in that sprinkling.
+def all_deltas(D, H, Ns, def_delta_all_elements, folder_path, use_middle_third=False):
+    """
+    creates a python list of numpy arrays, each of which for one sprinkling ensemble.
+    This is the helper used by all_delta_data(..., delta_weighting="equal_sprinkling").
+    If use_middle_third=True, each sprinkling delta is computed from points with
+    t in [H/3, 2H/3] only; otherwise all inside points are used.
+    """
+    # Collect all sprinklings
+    all_deltas_list = []
+    for N in Ns:
+        sprinklings_list = all_sprinklings_tuples_for_D_H_N(D, H, N, folder_path)
+        # for the definition of delta that uses r-values of ALL elements
+        if def_delta_all_elements:
+            # array of deltas for all sprinklings with same D, H, N 
+            # using the all_elements definition of delta which is blind to the path length and
+            # how many paths share an element.
+            if use_middle_third:
+                t_low = H / 3.0
+                t_high = 2.0 * H / 3.0
+                sps_mean_rs = []
+                for sprinkling in sprinklings_list:
+                    rs_middle = [r for _, t, r in sprinkling if t_low <= t <= t_high]
+                    # Keep NaN if a sprinkling has no points in the middle-third slab.
+                    sps_mean_rs.append(np.mean(rs_middle) if rs_middle else np.nan)
+            else:
+                sps_mean_rs = [np.mean([r for _,_,r in sprinkling]) for sprinkling in sprinklings_list]
+            
+            # append that array to a list that contains similar arrays for differing N values.
+            all_deltas_list.append(sps_mean_rs)
+    return all_deltas_list
+
 # Collect data using delta_analyzer_middle_layers over all Ds, heights and N values and returns a dataframe
-def all_delta_data(use_middle_third, Ds, heights, N_values):
+def all_delta_data(use_middle_third, Ds, heights, N_values, delta_weighting="equal_path_length"):
     """
     Runs loops over values of height and N to collect all the lists
     delta_data = [D, height, N, int(rho), round(l_0, 3), round(delta, 3), round(delta / l_0, 3), round(L/l_0, 3), round(height / l_0, 3)]
     with L = 1 and all values rounded to 3 dp, in a master list all_delta_data.
+
+    Parameters
+    ----------
+    use_middle_third : bool
+        Used only when delta_weighting="equal_path_length" (Pipeline 1).
+    delta_weighting : str
+        "equal_path_length" -> current Pipeline 1 behavior (mean over k_max groups).
+        "equal_sprinkling" -> Pipeline 2 behavior (mean of per-sprinkling deltas).
+        Quick usage:
+        - all_delta_data(False, [4], [1, 10], Ns, "equal_path_length")
+        - all_delta_data(False, [4], [1, 10], Ns, "equal_sprinkling")
     
     Returns
     -------
@@ -312,22 +392,63 @@ def all_delta_data(use_middle_third, Ds, heights, N_values):
             # N_values = [10000, 20000, 40000, 80000, 160000, 320000]  # List of N values
             # N_values = np.array(N_values)
             
-            ## This is the loop in which we gather all the results 
-            # sequentially for each N by calling delta_analyzer_all_levels(N)
             folder_path = read_path(D, height)
-            for N in N_values:
-                # Call the function delta_analyzer_middle_layers and store only the delta_data tuple by using [1]
-                results_N_height, delta_data_N_height = delta_analyzer_middle_layers(folder_path, D, height, N, use_middle_third)
+            if delta_weighting == "equal_path_length":
+                # Sequentially for each N by calling delta_analyzer_middle_layers (Pipeline 1)
+                # Weighting rule in this branch:
+                #   delta = mean over k_max groups of (mean delta within that group)
+                for N in N_values:
+                    # Store only delta_data tuple using [1]
+                    results_N_height, delta_data_N_height = delta_analyzer_middle_layers(
+                        folder_path, D, height, N, use_middle_third
+                    )
 
-                # Iteratively store all the delta_data tuples in all_delta_data array
-                delta_data_all.append(delta_data_N_height)
-                
-                results_all.append(results_N_height)
+                    # Iteratively store all the delta_data tuples
+                    delta_data_all.append(delta_data_N_height)
+                    results_all.append(results_N_height)
+
+            elif delta_weighting == "equal_sprinkling":
+                # Pipeline 2: one delta per sprinkling, then average with equal sprinkling weight
+                # IMPORTANT: this branch does not regroup by k_max/path length.
+                # Each sprinkling contributes one delta and gets equal weight.
+                all_deltas_list = all_deltas(
+                    D, height, N_values, True, folder_path, use_middle_third=use_middle_third
+                )
+                for N, deltas_for_N in zip(N_values, all_deltas_list):
+                    delta = float(np.nanmean(np.asarray(deltas_for_N, dtype=float)))
+
+                    if D == 4:
+                        V = np.pi / 24 * height**4
+                    elif D == 3:
+                        V = np.pi / 12 * height**3
+                    elif D == 2:
+                        V = 0.5 * height**2
+                    else:
+                        raise ValueError(f"Unsupported D={D} for interval volume.")
+
+                    rho = N / V
+                    l_0 = rho**(-1 / D)
+                    delta_data_all.append([
+                        D, height, N, int(rho), round(l_0, 3), round(delta, 3),
+                        round(delta / height, 3), round(delta / l_0, 3), round(height / l_0, 3)
+                    ])
+            else:
+                raise ValueError(
+                    "delta_weighting must be 'equal_path_length' or 'equal_sprinkling'."
+                )
             
     # create dfs
     df_delta_data = pd.DataFrame(delta_data_all, columns=[
         'D','height','N','rho','l0','delta', 'delta_over_H', 'delta_over_l0','height_over_l0'
         ])
+    # Stored so plotting functions can auto-label titles/files with the delta definition used.
+    if delta_weighting == "equal_sprinkling":
+        if use_middle_third:
+            df_delta_data["delta_def"] = "middle third in time, equal sprinkling weight"
+        else:
+            df_delta_data["delta_def"] = "all elements in time, equal sprinkling weight"
+    else:
+        df_delta_data["delta_def"] = "middle third in time, equal path length weight" if use_middle_third else "all levels in time, equal path length weight"
     
     # df_results = pd.DataFrame(results_all, columns=["Height", "N", "num_levels", "mean_r", "SE_r", "group_level_means", "group_level_se", "group_level_means_t", "group_level_se_t", "num_sprinklings"])
 
@@ -335,29 +456,10 @@ def all_delta_data(use_middle_third, Ds, heights, N_values):
     #return df_delta_data, df_results
     return df_delta_data
 
-# new function to collect the deltas for all the sprinklings for all Ns. delta defined as the mean of the r-values of all elements in the sprinkling
-def all_deltas(D, H, Ns, def_delta_all_elements, folder_path):
-    """
-    creates a python list of numpy arrays, each of which for one sprinkling ensemble.
-    """
-    # Collect all sprinklings
-    all_deltas_list = []
-    for N in Ns:
-        sprinklings_list = all_sprinklings_tuples_for_D_H_N(D, H, N, folder_path)
-        # for the definition of delta that uses r-values of ALL elements
-        if def_delta_all_elements:
-            # array of deltas for all sprinklings with same D, H, N 
-            # using the all_elements definition of delta which is blind to the path length and
-            # how many paths share an element.
-            sps_mean_rs = [np.mean([r for _,_,r in sprinkling]) for sprinkling in sprinklings_list] 
-            
-            # append that array to a list that contains similar arrays for differing N values.
-            all_deltas_list.append(sps_mean_rs)
-    return all_deltas_list
 
 ######### Delta vs. N ######
 # Original function
-def δbyH_vs_N(Ds, df_delta_data_all, delta_definition=None):
+def δbyH_vs_N(Ds, df_delta_data_all, delta_definition=None, annotate_points=True, annotation_fontsize=7):
     """
     df_delta_data = pd.DataFrame(all_deltas, columns=[
         'D','height','N','rho','l0','delta', 'delta_over_H', 'delta_over_l0', 'height_over_l0'
@@ -367,6 +469,8 @@ def δbyH_vs_N(Ds, df_delta_data_all, delta_definition=None):
         - If bool: True -> "middle third in time", False -> "all levels in time"
         - If str: used directly
         - If None: attempts to infer from df_delta_data_all["delta_def"] if present
+    annotate_points: If True, write a label next to each point as (delta/H, H/l0).
+    annotation_fontsize: Font size used for point labels.
     """
     # Determine a human-readable delta definition label
     if delta_definition is None:
@@ -384,7 +488,7 @@ def δbyH_vs_N(Ds, df_delta_data_all, delta_definition=None):
     delta_def_suffix = "".join([c if c.isalnum() else "_" for c in delta_def_label]).strip("_") or "unspecified"
 
     for D in Ds:
-        df_delta_data = df_delta_data_all[df_delta_data_all['D'] == D]
+        df_delta_data = df_delta_data_all[df_delta_data_all['D'] == D].sort_values(['height', 'N'])
         print(df_delta_data)
         x = np.array(df_delta_data['N'])
         height = np.array(df_delta_data['height'])
@@ -458,22 +562,34 @@ def δbyH_vs_N(Ds, df_delta_data_all, delta_definition=None):
             file_path = join(folder_path, file_name)
             fig2.savefig(file_path)
             plt.close(fig2)
-        # Anotate points
-        # for xi, yi, Ni, H, l0 in zip(
-        #     x, y, df_delta_data['N'], df_delta_data['height'], df_delta_data['l0']
-        # ):
-        #     ax.annotate(
-        #         f"{yi:.3f}, {H/l0:.2f})",
-        #         xy=(xi, yi),
-        #         xytext=(0, 5),
-        #         textcoords="offset points",
-        #         ha='center',
-        #         fontsize=9
-        #     )
+        # Annotate points with (delta/H, H/l0). Alternate offsets to reduce overlap.
+        if annotate_points:
+            df_annot = df_delta_data.reset_index(drop=True)
+            for idx, row in df_annot.iterrows():
+                xi = row['N']
+                yi = row['delta'] / row['height']
+                H = row['height']
+                l0 = row['l0']
+                dx = 6 if idx % 2 == 0 else -6
+                dy = 6 if idx % 3 else -8
+                ax.annotate(
+                    f"({yi:.3f}, {H/l0:.2f})",
+                    xy=(xi, yi),
+                    xytext=(dx, dy),
+                    textcoords="offset points",
+                    ha='left' if dx > 0 else 'right',
+                    va='bottom' if dy >= 0 else 'top',
+                    fontsize=annotation_fontsize,
+                    bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=0.55)
+                )
         
         ax.set_xlabel('N', fontsize=20)
         ax.set_ylabel('δ/H', fontsize=20)
-        ax.set_title(f'δ/H vs. N with labels: (δ/H, H/l₀)\nΔ definition: {delta_def_label}', fontsize=20)
+        if annotate_points:
+            title_main = 'δ/H vs. N with point labels: (δ/H, H/l₀)'
+        else:
+            title_main = 'δ/H vs. N'
+        ax.set_title(f'{title_main}\nΔ definition: {delta_def_label}', fontsize=20)
         ax.legend(fontsize=12, loc='best')
 
         fig1.tight_layout()
@@ -608,6 +724,7 @@ def bootstrap_bounds(all_deltas, Ns, B):
     return bound_beta, bound_A
 
 ######### Shape ########
+# Pipeline 3: full-geometry loader used for rs/ts/theta/phi visualizations and path tools.
 def sprinklings_D_H_N(D, height, N):
     """
     Docstring for sprinkling_groups
@@ -678,6 +795,9 @@ def data_rs_ts_all(D, height, N, sprinklings):
     """
     # Step 2: Working with groups of sprinklings with the same path length.
     # A chunk is a sprinkling, so called because it is a 'chunk' of rows in the csv file.
+    # Note: this function intentionally flattens point data across sprinklings in each
+    # group; good for visualization, but not a drop-in replacement for Pipeline 1
+    # aggregation (which needs per-sprinkling/per-level structure).
     
     # the final array of results 
     results = []
@@ -688,7 +808,7 @@ def data_rs_ts_all(D, height, N, sprinklings):
         thetas = []
         phis = []
         for chunk in chunk_list:
-            for level, t, r, theta, phi in chunk:
+            for _, level, t, r, theta, phi, _ in chunk:
                 # r and t are stored for all the sprinklings with the same path length
                 rs.append(r) 
                 ts.append(t)
@@ -710,10 +830,11 @@ def δ_vs_t(D, N_values, height, min_freq, individual_sprinklings=False):
     all_results = []
     rng = np.random.default_rng()
     ## This is the loop in which we gather all the results 
-    # sequentially for each N by calling data_rs_ts_all(D, N, height)
+    # sequentially for each N by building sprinklings, then calling data_rs_ts_all(D, height, N, sprinklings)
 
     for N in N_values:
-        all_results.extend(data_rs_ts_all(D, N, height))
+        sprinklings = sprinklings_D_H_N(D, height, N)
+        all_results.extend(data_rs_ts_all(D, height, N, sprinklings))
 
     # Convert results to a DataFrame for easy plotting
     df_results = pd.DataFrame(all_results, columns=["D", "Height", "N", "num_levels", "rs", "ts", "thetas", "phis", "num_sprinklings"])
@@ -1507,10 +1628,10 @@ def δ_vs_density(df_delta_data):
 
 if __name__ == "__main__":
     
-    Ds = [2]
-    heights = [1]
+    Ds = [4]
+    heights = [1, 10]
 
-    inside_Ns = [100,  1309,  2618, 3927,  5236,  6545,  7854,  9163, 10472, 13090, 15708, 18326, 20944, 26180, 39270, 52360, 74048, 104720, 148096, 209440, 296193, 418880, 592368, 1184736]
+    inside_Ns = [100,  1309,  2618, 3927,  5236,  6545,  7854,  9163, 10472, 13090, 15708, 18326, 20944, 26180, 39270, 52360, 74048, 104720, 148096, 209440]
     # inside_Ns = [18326, 20944, 26180, 39270, 52360, 74048, 104720, 148096, 209440, 296193, 418880, 592368, 1184736]
     # inside_Ns = [1675470]
     
@@ -1539,14 +1660,23 @@ if __name__ == "__main__":
     # δ_vs_t(Ds[0], inside_Ns, heights[0], min_freq, individual_sprinklings)
     
     #### individual sprnkling with path ####
-    for N_inside in inside_Ns:
-        sprinkling_groups = sprinklings_D_H_N(Ds[0], heights[0], N_inside)
-    #print(sprinkling_groups)
-        visualize_sprinkling_with_path(Ds[0], heights[0], N_inside, sprinkling_groups)
+    # for N_inside in inside_Ns:
+    #     sprinkling_groups = sprinklings_D_H_N(Ds[0], heights[0], N_inside)
+    # #print(sprinkling_groups)
+    #     visualize_sprinkling_with_path(Ds[0], heights[0], N_inside, sprinkling_groups)
 
     #### number of paths vs. N ####
     # wrapper_num_paths(Ds, heights, inside_Ns)
     
-    
+    df = all_delta_data(
+        use_middle_third=True,              # True = middle third, False = all times
+        Ds=Ds,
+        heights=heights,
+        N_values=inside_Ns,
+        delta_weighting="equal_sprinkling"  # equal sprinkling weights
+    )
+
+    δbyH_vs_N(Ds, df, delta_definition=m, annotate_points=True)
+
     
     
