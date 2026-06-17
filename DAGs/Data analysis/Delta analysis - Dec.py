@@ -2,8 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Thu Dec 12 11:28:11 2024
-
-@author: naumanibrahim
 """
 import pandas as pd
 import numpy as np
@@ -12,19 +10,16 @@ from matplotlib import pyplot as plt
 import plotly.graph_objects as go
 from collections import defaultdict 
 import os
-from os.path import join, expanduser
+from pathlib import Path
 import plotly.express as px
 
 def read_path(D, height):
-    parent_path = join(expanduser("~"), "Desktop", "GitRepos", "cst_longest_maximal_chains", "DAGs", "LMCs_data", "Intervals")
-    folder_name = f"D {D} - Height {height}"
-    folder_path = join(parent_path, folder_name)
+    folder_path = Path(__file__).parent.parent / "LMCs_data" / "Intervals" / f"D {D} - Height {height}"
     os.makedirs(folder_path, exist_ok=True)
-    return folder_path
+    return str(folder_path)
 
 def write_path():
-    parent_path = join(expanduser("~"), "Desktop", "GitRepos", "cst_longest_maximal_chains", "DAGs", "Data analysis")
-    return parent_path
+    return str(Path(__file__).parent)
 
 # ---------------------------------------------------------------------
 # Data collection pipelines (quick reference)
@@ -271,12 +266,9 @@ def delta_analyzer_middle_layers(folder_path, D, height, N, use_middle_third, fi
         # 1B. Calculate the mean of the means for that group of sprinklings
 
 ######### Step 4 of determining delta:
-        ##### This are the main quantity I am interested in: delta for each D, H, N.
         # mean_of_means is per k_max group (one path-length group only).
         mean_of_means = np.nanmean(group_means)
-        ##### This definition of standard error just uses the means of the groups sprinklings defined by path length which is not what I am interested in. 
-        # because mean_of_means is treating all path lengths with equal weight the standard deviation should be over all sprinklings. Hence, I should work with the 
-        # function all_deltas below that outputs a python list of numpy arrays, each of which contains deltas for each sprinkling with the same D, H, N.
+        # std_error here is over path-length groups; for per-sprinkling error bars use all_deltas() below.
         std_error = np.nanstd(group_means)
         
         # 2B. Converts to a 2D array of shape (sprinkling number, level number)
@@ -1676,7 +1668,7 @@ if __name__ == "__main__":
         delta_weighting="equal_sprinkling"  # equal sprinkling weights
     )
 
-    δbyH_vs_N(Ds, df, delta_definition=m, annotate_points=True)
+    δbyH_vs_N(Ds, df, delta_definition=True, annotate_points=True)
 
     
     

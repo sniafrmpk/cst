@@ -2,8 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Tue May 6 2025
-
-@author: naumanibrahim
 """
 
 import numpy as np

@@ -4,7 +4,6 @@
 Created on Thu Dec 125 11:28:11 2025
 
 Changing edge relaxation from adj[u] as list --> in-line
-@author: naumanibrahim
 """
 import numpy as np
 import time
@@ -13,7 +12,8 @@ from numba import njit, prange, set_num_threads, types
 from numba.typed import List
 #from scipy.sparse import csr_matrix, save_npz, load_npz
 import os
-from os.path import join, expanduser
+from os.path import join
+from pathlib import Path
 import glob
 import itertools
 import matplotlib.pyplot as plt
@@ -48,61 +48,26 @@ def Minkowski_interval(interval_size=10000, height=1, dimension=4):
     srt_coords = coords[np.argsort(coords[:, 0])]
     return srt_coords
 
-#@njit
 def Minkowski_cube(rho = 10000, height = 1, D = 4, l=0):
-    #code_start_time=time.time()
-   
-    ###define things that we need###
-    #N is the total number of points
     N = rho
     width = 1
-    #coords is the unsorted array of coordinates of the points in the hypercube
-    coords = np.zeros((N,D)) # this creates an array with N rows and D columns
-    
-    #Force coding the two points of interest, a and b, at (1,-l/2,0,0) and (1,l/2,0,0)
-    coords[0,:]=[height,-l/2,0,0]
-    #coords[1,:]=(1,l/2,0,0) # for now I want l = 0 and I don't want there to be to elements there
-    #and also the coordinates for c, the comparison point to be at (0,0,0,0):
-    coords[1,:]=[0,0,0,0]
-    #coords[N-1,0] = height
-    #trial_coord are the coordinates of one point. It will be generated repeatedly
-    temp_coord = np.zeros((1,D)) #defining and initializing the temp coord as an array of
-    #a single row with D columns filled with zeros. two braces are necessary in using np.zeros. 
-    #np.zeros((1)) the same as np.zeros((1,1)).
-    successes = 2 #defining the counter that tells when the coords array is full
-    
-    while successes < N: #colon is need for loops apparently
-     
-    #generate temp_coord where the domain of the cube is [0,1] in time and [-0.5,0.5] for x, y, z.
-        temp_coord[0,0] = height * random.random() #creates the time coordinate
-        temp_coord[0,1:] = width * np.random.rand(1,D-1) - width * 0.5 # this simultaneously
-    #creates all the space coordinates of the temp coord. the magic happens by
-    #using "1:" in the arg of the temp_coord because it means all the columns 1 and 
-    #onwards. Then np.random.rand(1,D-1) generates an array of random numbers between
-    #0-1 with one row and D-1 columns. we are subtracting half the height because
-    #we want our cube to be symmetric along the spatial axes (axes is the plural of axis).
-    
-    
-        coords[successes,:] = temp_coord[0,:] #else if command to accept the temp coord
-         #and add it to the coordinates array. no need to write coords(successes,0:) i.e.
-         #a 0 before the :.......... Also I think temp_coord[:] without the 0, would have 
-         #worked just fine.
-    
+    coords = np.zeros((N,D))
+
+    # Fix reference point a at (height, -l/2, 0, ...) and origin c at index 1.
+    # After sorting by time, c gets index 0 and a gets index N-1.
+    coords[0,:] = [height,-l/2,0,0]
+    coords[1,:] = [0,0,0,0]
+    temp_coord = np.zeros((1,D))
+    successes = 2
+
+    while successes < N:
+        temp_coord[0,0] = height * random.random()
+        temp_coord[0,1:] = width * np.random.rand(1,D-1) - width * 0.5
+        coords[successes,:] = temp_coord[0,:]
         successes += 1
-   
-    # Inducing natural labeling on the points by sorting them according to the time coordinate of each point##
-    #Where will points a,b and c end up at? I want to know their index. because all points have a definte time
-    #coordinate and they are sorted based on that therefore all of them will have an index based on their time
-    #coordinate. For c, this would mean that it will mean that it will get the index 0 because none of the randomly
-    #generated points can have a time coordinate that is exactly zero. For a and b it will be tricky because I have
-    #assigned both of them a time of coordinate value of 1. I guess the thing to do is to just run the sort and 
-    #see what I get! OK, so consistently I see that b with x_b=+l/2 gets placed one index below a with x_a=-l/2.
-    
-    ###########So, that tells me that a has index N-1 and b has index N-2 and c has index 0.######################
-    
-    #sort_start=time.monotonic() # start time to check how long it takes for np.argsort to do the sorting
+
+    # Sort by time coordinate to impose natural labeling.
     final_coords = coords[np.argsort(coords[:,0])]
-    #print(f"Generating the final coordinates took: {time.time()-code_start_time:.2f} s")
     return final_coords
 
 ######################## DiGraph with negative weights for reference ###################
@@ -122,7 +87,7 @@ def graph_from_neighbors_weighted(Rp, N_total, weight=-1):
 
 ####################### Finding LMCs using NetworkX ################
 
-## To get a networkx digraph ## I wonder if giving it R and asking it to find L using transitive reduction would be faster?
+## To get a networkx digraph
 # G = nx.from_scipy_sparse_array(csr_matrix(L), create_using=nx.DiGraph)
 
 
@@ -639,8 +604,7 @@ if __name__ == "__main__":
     # inline is the modification to the code that does not generate adj[u] when running the graph algorithm
     inline = True
 
-    parent_path = join(expanduser("~"), "Desktop", "GitRepos",
-                        "cst_longest_maximal_chains", "DAGs", "LMCs_data", "Intervals")
+    parent_path = str(Path(__file__).parent / "LMCs_data" / "Intervals")
     folder_name = f"D {D} - Height {height}"
     folder_path = join(parent_path, folder_name)
     os.makedirs(folder_path, exist_ok=True)
@@ -710,18 +674,6 @@ if __name__ == "__main__":
 
 
 
-# Unix command to run on biggee so that I can log out:
-    # nohup python3 LMCs_bool_Dec_v3.py > output.txt 2>&1 &
-
-# Unix command to copy file from biggee to Desktop
-    # scp sibrahim@biggee.phy.olemiss.edu:/localhome/sibrahim/LMCs_data/Intervals/file.csv ~/Desktop/
-
-# Unix command to copy file from mac to biggee
-    # scp ~/Desktop/GitRepos/cst_longest_maximal_chains/DAGs/LMCs_bool_Dec_v3.py  sibrahim@biggee.phy.olemiss.edu:/localhome/sibrahim/LMCs_bool_UT 
-
-# to copy whole folder from biggee to Desktop
-    # cd ~/Desktop/GitRepos/cst_longest_maximal_chains/DAGs                                                                                             
-    # rsync -avz sibrahim@biggee.phy.olemiss.edu:/localhome/sibrahim/LMCs_data/Intervals/ ./LMCs_data/Intervals_from_hpc/
 
 ##### implementing parralelization for running 10 trials ######
 ## The current implementation only every creates the the same no. of 
